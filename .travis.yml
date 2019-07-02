@@ -16,10 +16,6 @@ install:
   - pip install codacy-coverage
 script:
   - pytest tests/
-after_success: |
-  if [ "$TRAVIS_PYTHON_VERSION" == "3.7" ]; then
-    python-codacy-coverage -r .coverage.xml
-  fi
 deploy:
   provider: script
   script: poetry publish --build -u $PYPI_USER -p $PYPI_PASSWORD

@@ -3,19 +3,17 @@ requires = [ "poetry>=0.12",]
 build-backend = "poetry.masonry.api"
 
 [tool.poetry]
-name = "pyparam"
-version = "0.2.2"
-description = "Powerful parameter processing."
+name = "remotedata"
+version = "0.0.1"
+description = "Accessing and caching remote data."
 authors = [ "pwwang <pwwang@pwwang.com>",]
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/pwwang/pyparam"
-repository = "https://github.com/pwwang/pyparam"
+homepage = "https://github.com/pwwang/remotedata"
+repository = "https://github.com/pwwang/remotedata"
 
 [tool.poetry.dependencies]
 python = "^3.4"
-colorama = "*"
-completions = "*"
 python-simpleconf = "*"
 
 [tool.poetry.dev-dependencies]
