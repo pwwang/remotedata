@@ -5,12 +5,12 @@ from datetime import datetime
 from pathlib import Path
 from simpleconf import Config
 
-config = Config()
-config._load({
+config = Config(with_profile = False)
+config._load(dict(
 	source   = 'github',
 	cachedir = '/tmp/',
 	repos    = None
-}, '~/.remotedata.yaml', './.remotedata.yaml', 'REMOTEDATA.osenv')
+), '~/.remotedata.yaml', './.remotedata.yaml', 'REMOTEDATA.osenv')
 
 class RemoteData:
 
@@ -30,57 +30,80 @@ class RemoteData:
 		self.cachedir = Path(conf.cachedir)
 
 	@property
-	def url(self):
+	def url(self): # pragma: no cover
 		raise NotImplementedError()
 
+	@staticmethod
+	def metafile(filename):
+		if '/' in filename:
+			filename = Path(filename)
+			return str(filename.parent / ('.' + filename.name + '.meta'))
+		return '.' + filename + '.meta'
+
 	def remoteMeta(self, filename):
-		meta = self.url.replace('{file}', '.' + filename + '.meta')
+		meta = self.url.replace('{{file}}', RemoteData.metafile(filename))
 		r = requests.get(meta)
-		if r.status_code == 404:
+		if r.status_code != 200:
 			return None, None
-		return r.content.split('|', 1)
+		return r.text.strip().split('|', 1)
 
 	def localMeta(self, filename):
-		meta = self.cachedir / ('.' + filename + '.meta')
+		meta = self.cachedir / RemoteData.metafile(filename)
 		if not meta.exists() or not (self.cachedir / filename).exists():
 			return None, None
-		return meta.read_text().split('|', 1)
+		return meta.read_text().strip().split('|', 1)
 
 	def isCached(self, filename):
-		local_mtime, local_sha = self.localMeta()
+		local_mtime, local_sha = self.localMeta(filename)
 		if not local_mtime:
 			return False
-		remote_mtime, remote_sha = self.remoteMeta()
+		remote_mtime, remote_sha = self.remoteMeta(filename)
 		if not remote_mtime:
 			warnings.warn(
 				'Cannot fetch meta information for %r, will always download it.' % filename)
+			remote_mtime = datetime.now().timestamp()
 		if int(remote_mtime) > int(local_mtime):
 			return False
 		return local_sha == remote_sha
 
 	def download(self, filename):
 		localfile = self.cachedir / filename
-		fileurl   = self.url.replace('{file}', filename)
+		fileurl   = self.url.replace('{{file}}', filename)
+		localfile.parent.mkdir(exist_ok=True, parents=True)
 		r = requests.get(fileurl)
 		with localfile.open('wb') as f:
 			f.write(r.content)
 
-		meta = self.url.replace('{file}', '.' + filename + '.meta')
-		localmeta = self.cachedir / ('.' + filename + '.meta')
+		meta = self.url.replace('{{file}}', RemoteData.metafile(filename))
+		localmeta = self.cachedir / RemoteData.metafile(filename)
 		r = requests.get(meta)
-		if r.status_code == 404:
+		if r.status_code != 200:
 			mtime = datetime.now().timestamp()
 			sha   = RemoteData.sha1(localfile)
-			with localmeta.open('wb') as f:
+			with localmeta.open('w') as f:
 				r.write(str(mtime) + '|' + sha)
 		else:
-			with localmeta.open('wb') as f:
-				f.write(r.content)
+			with localmeta.open('w') as f:
+				f.write(r.text)
 
 	def get(self, filename):
 		if not self.isCached():
 			self.download(filename)
 		return self.cachedir / filename
+
+	def remove(self, filename):
+		"""Remote local cached file
+		Just remove the meta file will work"""
+		metafile = self.cachedir / RemoteData.metafile(filename)
+		if metafile.exists():
+			metafile.unlink()
+
+	def clear(self):
+		for path in self.cachedir.glob('*'):
+			if path.isdir():
+				shutil.rmtree(path)
+			else:
+				path.unlink()
 
 class GithubRemoteData(RemoteData):
 
@@ -99,7 +122,7 @@ class GithubRemoteData(RemoteData):
 	def url(self):
 		if not self.conf.repos:
 			raise ValueError('Github remote data needs "repos" to be set.')
-		return 'https://raw.githubusercontent.com/%s/%s/{file}'.format(self.repository)
+		return 'https://raw.githubusercontent.com/%s/%s/{{file}}' % (self.repository)
 
 
 if config.source == 'github':
