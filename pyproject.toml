@@ -15,6 +15,7 @@ repository = "https://github.com/pwwang/remotedata"
 [tool.poetry.dependencies]
 python = "^3.4"
 python-simpleconf = "*"
+requests = "*"
 
 [tool.poetry.dev-dependencies]
 pytest = "*"
