@@ -28,6 +28,7 @@ def setup_module(module):
 
 @pytest.fixture
 def config_standard(tmp_path):
+	print('\nCACHEDIR: %s\n' % tmp_path)
 	ret = pytest.config._use('standard', copy = True)
 	ret.cachedir = tmp_path
 	return ret
@@ -95,6 +96,13 @@ def test_githubremotedata_standard(config_standard, tmp_path):
 	with pytest.raises(ValueError) as error:
 		ghremotedata.get('NoSuchFile')
 	assert 'Resource not found' in str(error.value)
+
+	# large file
+	path = 'tests/data/largefile.txt'
+	ghobj = ghremotedata._fileobj(path)
+	ghremotedata.get(path)
+	assert ghobj.local.is_file()
+
 
 
 
