@@ -2,7 +2,7 @@ import pytest
 from pathlib import Path
 import requests
 from simpleconf import Config
-from remotedata import remotedata, GithubRemoteData, GithubRemoteFile, _hashfile
+from remotedata import remotedata, GithubRemoteData, GithubRemoteFile, _hashfile, DropboxRemoteFile
 
 def setup_module(module):
 	pytest.config = Config()
@@ -13,9 +13,6 @@ def setup_module(module):
 		'standard': {
 			'source': 'github'
 		},
-		'remotedata': {
-			'source': 'github.remotedata'
-		},
 		'invalidrepos': {
 			'source': 'github',
 			'repos': 'a'
@@ -23,6 +20,9 @@ def setup_module(module):
 		'withbranch': {
 			'source': 'github',
 			'repos': 'pwwang/remotedata/notmaster'
+		},
+		'dropbox': {
+			'source': 'dropbox',
 		}
 	}, '~/.remotedata.yaml', 'REMOTEDATA.osenv') # get token from osenv
 
@@ -30,12 +30,6 @@ def setup_module(module):
 def config_standard(tmp_path):
 	print('\nCACHEDIR: %s\n' % tmp_path)
 	ret = pytest.config._use('standard', copy = True)
-	ret.cachedir = tmp_path
-	return ret
-
-@pytest.fixture
-def config_remotedata(tmp_path):
-	ret = pytest.config._use('remotedata', copy = True)
 	ret.cachedir = tmp_path
 	return ret
 
@@ -48,6 +42,12 @@ def config_invalidrepos(tmp_path):
 @pytest.fixture
 def config_withbranch(tmp_path):
 	ret = pytest.config._use('withbranch', copy = True)
+	ret.cachedir = tmp_path
+	return ret
+
+@pytest.fixture
+def config_dropbox(tmp_path):
+	ret = pytest.config._use('dropbox', copy = True)
 	ret.cachedir = tmp_path
 	return ret
 
@@ -105,7 +105,25 @@ def test_githubremotedata_standard(config_standard, tmp_path):
 	ghremotedata.get(path)
 	assert ghobj.local.is_file()
 
+# def test_ghrdremotedata(config_remotedata):
+# 	ghrd = remotedata(config_remotedata)
+# 	ghrdobj = ghrd._fileobj('tests/data/test.txt')
+# 	assert ghrdobj.remoteHashFile == '.remotedata-hash/tests.data.test.txt.hash'
+# 	ghrdobj.get()
+# 	assert ghrdobj.remoteHash() == ghrdobj.localHashFile.read_text()
 
+def test_dropbox(config_dropbox):
+	dbxremotedata = remotedata(config_dropbox)
+	fileobj = dbxremotedata._fileobj('config.fish')
+	assert isinstance(fileobj, DropboxRemoteFile)
+	fileobj.get()
+	assert fileobj.local.is_file()
+	assert fileobj.remoteHash() == _hashfile(fileobj.local, 'dropbox')
+	assert fileobj.isCached()
+	dbxremotedata.clear()
+	assert not fileobj.isCached()
+	dbxremotedata.get('/config.fish')
+	assert fileobj.isCached()
 
 
 

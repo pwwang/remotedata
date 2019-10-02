@@ -14,6 +14,8 @@ def _requireConfig(config, key):
 def _hashfile(path, method = 'git-sha'):
 	if method == 'git-sha':
 		return cmdy.git('hash-object', str(path)).split()[0]
+	if method == 'dropbox':
+		return DropboxContentHasher.hash(path)
 	# pragma: no cover, will be used in the future.
 	if method == 'sha' or method == 'sha1': # pragma: no cover
 		return cmdy.sha1sum(str(path)).split()[0]
@@ -23,10 +25,99 @@ def _hashfile(path, method = 'git-sha'):
 		return cmdy.md5sum(str(path)).split()[0]
 	raise ValueError('Unsupported hash type.') # pragma: no cover
 
+class DropboxContentHasher: # pragma: no cover
+	"""
+	https://github.com/dropbox/dropbox-api-content-hasher/blob/master/python/dropbox_content_hasher.py
+	Computes a hash using the same algorithm that the Dropbox API uses for the
+	the "content_hash" metadata field.
+	The digest() method returns a raw binary representation of the hash.  The
+	hexdigest() convenience method returns a hexadecimal-encoded version, which
+	is what the "content_hash" metadata field uses.
+	This class has the same interface as the hashers in the standard 'hashlib'
+	package.
+	Example:
+		hasher = DropboxContentHasher()
+		with open('some-file', 'rb') as f:
+			while True:
+				chunk = f.read(1024)  # or whatever chunk size you want
+				if len(chunk) == 0:
+					break
+				hasher.update(chunk)
+		print(hasher.hexdigest())
+	"""
+
+	BLOCK_SIZE = 4 * 1024 * 1024
+
+	@staticmethod
+	def hash(path):
+		hasher = DropboxContentHasher()
+		with open(path, 'rb') as f:
+			while True:
+				chunk = f.read(1024)  # or whatever chunk size you want
+				if len(chunk) == 0:
+					break
+				hasher.update(chunk)
+		return hasher.hexdigest()
+
+	def __init__(self):
+		self._overall_hasher = hashlib.sha256()
+		self._block_hasher = hashlib.sha256()
+		self._block_pos = 0
+
+		self.digest_size = self._overall_hasher.digest_size
+		# hashlib classes also define 'block_size', but I don't know how people use that value
+
+	def update(self, new_data):
+		if self._overall_hasher is None:
+			raise AssertionError(
+				"can't use this object anymore; you already called digest()")
+
+		assert isinstance(new_data, bytes), (
+			"Expecting a byte string, got {!r}".format(new_data))
+
+		new_data_pos = 0
+		while new_data_pos < len(new_data):
+			if self._block_pos == self.BLOCK_SIZE:
+				self._overall_hasher.update(self._block_hasher.digest())
+				self._block_hasher = hashlib.sha256()
+				self._block_pos = 0
+
+			space_in_block = self.BLOCK_SIZE - self._block_pos
+			part = new_data[new_data_pos:(new_data_pos+space_in_block)]
+			self._block_hasher.update(part)
+
+			self._block_pos += len(part)
+			new_data_pos += len(part)
+
+	def _finish(self):
+		if self._overall_hasher is None:
+			raise AssertionError(
+				"can't use this object anymore; you already called digest() or hexdigest()")
+
+		if self._block_pos > 0:
+			self._overall_hasher.update(self._block_hasher.digest())
+			self._block_hasher = None
+		h = self._overall_hasher
+		self._overall_hasher = None  # Make sure we can't use this object anymore.
+		return h
+
+	def digest(self):
+		return self._finish().digest()
+
+	def hexdigest(self):
+		return self._finish().hexdigest()
+
+	def copy(self):
+		c = DropboxContentHasher.__new__(DropboxContentHasher)
+		c._overall_hasher = self._overall_hasher.copy()
+		c._block_hasher = self._block_hasher.copy()
+		c._block_pos = self._block_pos
+		return c
+
 class RemoteFile:
 	"""APIs to access, operate and download remote files."""
 
-	def __init__(self, path, cachedir, **config):
+	def __init__(self, path, cachedir, config):
 		self.path     = Path(path)
 		self.cachedir = Path(cachedir)
 		self.config   = config
@@ -91,9 +182,7 @@ class RemoteData:
 		self.cachedir  = config['cachedir']
 
 	def _fileobj(self, path):
-		return self.fileclass(
-			path, self.cachedir,
-			**{key:val for key,val in self.config.items() if key != 'cachedir'})
+		return self.fileclass(path, self.cachedir, self.config)
 
 	def get(self, path):
 		return self._fileobj(path).get()
@@ -179,35 +268,41 @@ class GithubRemoteData(RemoteData):
 			repos.replace('/', '.') + '@' + branch)
 		self.cachedir.mkdir(exist_ok = True, parents = True)
 
-class GithubRDRemoteFile(GithubRemoteFile):
-	"""Remote file from github remotedata format repository"""
-	@property
-	def remoteHashFile(self):
-		"""Get remote hash file: .remotedata-hash/path.hash"""
-		return '.remotedata-hash/%s.hash' % str(self.path).replace('/', '.')
+class DropboxRemoteFile(RemoteFile):
+	"""Files from Dropbox"""
+	def __init__(self, path, cachedir, config):
+		super().__init__(path, cachedir, config)
+		if str(self.path).startswith('/'):
+			self.path = Path(str(self.path)[1:])
 
 	def remoteHash(self):
-		shafile = GithubRemoteFile(
-			self.remoteHashFile,
-			self.cachedir,
-			session      = self.config['session'],
-			branch       = self.config['branch'],
-			contents_api = self.config['contents_api'])
-		return base64.b64decode(shafile.json()['content'])
+		return self.config['dropbox'].files_get_metadata(path = '/' + str(self.path)).content_hash
 
-class GithubRDRemoteData(GithubRemoteData):
-	"""Github repository with remotedata format"""
+	def download(self):
+		self.config['dropbox'].files_download_to_file(path = '/' + str(self.path), download_path = self.local)
+
+class DropboxRemoteData(RemoteData):
+	"""Remote data from dropbox"""
 	def __init__(self, config):
 		super().__init__(config)
-		self.fileclass = GithubRDRemoteFile
+		_requireConfig(config, 'dropbox_token')
+		self.fileclass = DropboxRemoteFile
+		self.config = config.copy()
+
+		import dropbox
+		self.config['dropbox'] = dbx = dropbox.Dropbox(config['dropbox_token'])
+		self.config['hashtype'] = config.get('hashtype', 'dropbox')
+		user = dbx.users_get_current_account().name.display_name
+		self.cachedir = Path(config['cachedir']).joinpath('dropbox', user)
+		self.cachedir.mkdir(exist_ok = True, parents = True)
 
 def remotedata(config):
 	_requireConfig(config, 'source')
 	_requireConfig(config, 'cachedir')
 	if config['source'] == 'github':
 		return GithubRemoteData(config)
-	if config['source'] == 'github.remotedata':
-		return GithubRDRemoteData(config)
+	if config['source'] == 'dropbox':
+		return DropboxRemoteData(config)
 	# if config['source'] == 'restful':
 	# 	return RestfulRemoteData(config)
 	# if config['source'] == 'ssh':
