@@ -118,10 +118,10 @@ class RemoteData:
 class GithubRemoteFile(RemoteFile):
 
 	@lru_cache()
-	def json(self, api = None):
+	def json(self, api = None, withpath = False):
 		api    = api or self.config['contents_api']
 		return self.config['session'].get(
-			api + str(self.path),
+			api + (str(self.path) if not withpath else ''),
 			params = {'ref': self.config['branch']}).json()
 
 	def remoteHash(self):
@@ -132,8 +132,13 @@ class GithubRemoteFile(RemoteFile):
 		if 'message' in json and 'Not Found' in json['message']:
 			raise ValueError('Resource not found at %r' % self.path)
 		if 'message' in json and 'This API returns blobs up to 1 MB in size.' in json['message']:
-			sha = json['sha']
-			json = self.json(api = self.config['blobs_api'] + str(self.path))
+			parent_json = self.json(
+				api = self.config['contents_api'] + str(self.path.parent),
+				withpath = True)
+			for item in parent_json:
+				if item['name'] == self.path.name:
+					json = self.json(api = self.config['blobs_api'] + item['sha'], withpath = True)
+					break
 		self.local.parent.mkdir(exist_ok = True, parents = True)
 		with self.local.open('wb') as f:
 			f.write(base64.b64decode(json['content']))
@@ -209,7 +214,7 @@ def remotedata(config):
 	# 	return SshRemoteData(config)
 	raise ValueError('Unsupported source: %s.' % config['source'])
 
-def console():
+def console(): # pragma: no cover
 	"""Generate shas in .remotedata-hash"""
 	import sys
 	from fnmatch import fnmatch

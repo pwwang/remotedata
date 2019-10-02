@@ -54,6 +54,8 @@ def config_withbranch(tmp_path):
 def test_githubremotedata_noreqkey():
 	with pytest.raises(KeyError):
 		remotedata({'source': 'github'})
+	with pytest.raises(ValueError):
+		remotedata({'source': 'github1', 'cachedir': ''})
 
 def test_githubremotedata_invalidrepos(config_invalidrepos):
 	with pytest.raises(ValueError):
