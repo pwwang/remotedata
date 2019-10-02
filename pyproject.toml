@@ -21,6 +21,7 @@ cmdy = "*"
 pytest = "*"
 pytest-cov = "*"
 python-simpleconf = "*"
+dropbox = "*"
 
 [tool.poetry.scripts]
 remotedata-hash = "remotedata:console"
