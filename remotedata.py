@@ -1,221 +1,102 @@
 """Accessing and caching remote data"""
-import warnings
 import hashlib
 import shutil
 import base64
-from datetime import datetime
-from urllib.parse import quote
+from functools import lru_cache
 from pathlib import Path
 import requests
-from simpleconf import Config
+import cmdy
 
-CONFIG = Config(with_profile = False)
-CONFIG._load(dict(
-	source   = 'github',
-	cachedir = '/tmp/',
-	repos    = '',
-), '~/.remotedata.yaml', './.remotedata.yaml', 'REMOTEDATA.osenv')
+def _requireConfig(config, key):
+	if key not in config:
+		raise KeyError('%s required in configuration.' % key)
 
-def sha1File(filepath):
-	"""Get sha1 for file"""
-	bufsize = 2**16
-	ret = hashlib.sha1()
-	with open(filepath, 'rb') as fhand:
-		block = fhand.read(bufsize)
-		while block:
-			ret.update(block)
-			block = fhand.read(bufsize)
-	return ret.hexdigest()
-
-def sha1(filepath):
-	"""Get SHA1 of a file or directory"""
-	filepath = Path(filepath)
-	if not filepath.is_dir():
-		return sha1File(filepath)
-	ret = hashlib.sha1()
-	for path in sorted(filepath.glob('*')):
-		if path.suffix == '.meta':
-			continue
-		ret.update(sha1(path).encode())
-		if path.is_dir():
-			ret.update(path.name.encode())
-	return ret.hexdigest()
-
-def metafile(path):
-	"""The metafile of the file"""
-	if '/' in path:
-		path = Path(path)
-		return str(path.parent / ('.' + path.name + '.meta'))
-	return '.' + path + '.meta'
-
-class RemoteManager:
-	"""A manager to download/query remote files"""
-	def __init__(self, conf):
-		self.conf     = conf
-		self.session  = requests
-		self.api      = conf.get('api')
-		self.cachedir = Path(conf['cachedir'])
-		self.reqcache = {}
-
-	def _get(self, url, params):
-		"""Get a request object, try to cache it"""
-		cachekey = url + '@' + str(sorted(params))
-		if cachekey in self.reqcache:
-			return self.reqcache[cachekey]
-		req = self.session.get(url, params = params)
-		self.reqcache[cachekey] = req
-		return req
-
-	def get(self, path, **kwargs):
-		"""Get a request object"""
-		return self._get(self.remote(path), kwargs)
-
-	def exists(self, path, **kwargs):
-		"""Tell if a remote path exists"""
-		return self.get(path, **kwargs).status_code == 200
-
-	def save(self, path, **kwargs):
-		"""Save remote to local file"""
-		localfile = self.local(path)
-		with localfile.open('wb') as floc:
-			floc.write(self.content(path, **kwargs))
-
-	def content(self, path, **kwargs): # pragma: no cover
-		"""Get the content as bytes of path"""
-		return self.get(path, **kwargs).content
-
-	def json(self, path, **kwargs):
-		"""Get the json data of the response"""
-		return self.get(path, **kwargs).json()
-
-	def text(self, path, **kwargs):
-		"""Get text of the response"""
-		return self.content(path, **kwargs).decode()
-
-	def local(self, path):
-		"""Get the local path of the file"""
-		return self.cachedir / path
-
-	def remote(self, path):
-		"""Get the remote path of the file"""
-		return self.api.replace('{/path}', '/' + str(path))
-
-	def remove(self, path, clean = False):
-		"""Remote the local cache"""
-		localmeta = self.cachedir / metafile(path)
-		if localmeta.exists():
-			localmeta.unlink()
-		if clean and self.local(path).exists():
-			self.local(path).unlink()
+def _hashfile(path, method = 'git-sha'):
+	if method == 'git-sha':
+		return cmdy.git('hash-object', str(path)).split()[0]
+	if method == 'sha' or method == 'sha1':
+		return cmdy.sha1sum(str(path)).split()[0]
+	if method == 'sha256':
+		return cmdy.sha256sum(str(path)).split()[0]
+	if method == 'md5':
+		return cmdy.md5sum(str(path)).split()[0]
+	raise ValueError('Unsupported hash type.')
 
 class RemoteFile:
-	"""Remote file"""
+	"""APIs to access, operate and download remote files."""
 
-	def __init__(self, conf, manager = None):
-		self.conf    = conf
-		self.manager = manager if manager else RemoteManager(conf)
+	def __init__(self, path, cachedir, **config):
+		self.path     = Path(path)
+		self.cachedir = Path(cachedir)
+		self.config   = config
 
-	def remoteMetadata(self, path):
-		"""Get the remote meta data including modified time and sha1"""
-		if not self.manager.exists(path) or not self.manager.exists(metafile(path)):
-			return None, None
-		mtime, sha = self.manager.text(metafile(path)).strip().split('|', 1)
-		return int(float(mtime)), sha
+	@property
+	def local(self):
+		"""Get corresponding local path of the file"""
+		return self.cachedir.joinpath(self.path)
 
-	def localMetadata(self, path):
-		"""Get the local meta data including modified time and sha1"""
-		localmeta = self.manager.cachedir / metafile(path)
-		if not localmeta.exists():
-			return None, None
-		mtime, sha = localmeta.read_text().strip().split('|', 1)
-		return int(float(mtime)), sha
+	@property
+	def localHashFile(self):
+		"""Get local hash file"""
+		return self.cachedir / '.remotedata-hash' / (str(self.path).replace('/', '.') + '.hash')
 
-	def isCached(self, path):
-		"""Tell if a path is cached locally"""
-		local_mtime, local_sha = self.localMetadata(path)
-		if not local_mtime:
-			return False
-		remote_mtime, remote_sha = self.remoteMetadata(path)
-		if not remote_mtime:
-			remote_mtime = int(datetime.now().timestamp())
-		if remote_mtime > local_mtime:
-			return False
-		return local_sha == remote_sha
+	def remoteHash(self):
+		"""Get hash from remote"""
+		raise NotImplementedError("Don't know how to get remote hash.")
 
-	def updateRemoteMetafile(self, path):
-		"""Update remote meta file"""
+	def hash(self):
+		"""Get hash for file"""
+		return _hashfile(self.local, self.config['hashtype'])
 
-	def updateLocalMetafile(self, path, remotemeta = None):
-		"""Update local metafile"""
-		localmeta = self.manager.cachedir / metafile(path)
-		with localmeta.open('w') as fmeta:
-			if remotemeta:
-				fmeta.write(remotemeta)
-			else:
-				fmeta.write('%s|%s' % (
-					int((self.manager.cachedir / metafile(path)).stat().st_mtime),
-					sha1(self.manager.local(path))))
+	def localHash(self):
+		"""Get local hash"""
+		if self.localHashFile.exists():
+			return self.localHashFile.read_text().strip()
 
-	def download(self, path):
+		if not self.localHashFile.exists():
+			self.localHashFile.parent.mkdir(parents = True, exist_ok = True)
+		hashsum = self.hash()
+		self.localHashFile.write_text(hashsum)
+		return hashsum
+
+	def isCached(self):
+		"""Tell if a file is cached"""
+		return self.local.exists() and self.localHash() == self.remoteHash()
+
+	def updateHash(self):
+		"""Update local hash"""
+		if not self.localHashFile.exists():
+			self.localHashFile.parent.mkdir(parents = True, exist_ok = True)
+		self.localHashFile.write_text(self.hash())
+
+	def download(self):
 		"""Download remote file to local"""
-		# make sure directories have been created
-		self.manager.local(path).parent.mkdir(exist_ok=True, parents=True)
-		self.manager.save(path)
+		raise NotImplementedError("Don't know how to download remote file.")
 
-		meta = metafile(path)
-		if not self.manager.exists(meta):
-			self.updateLocalMetafile(path)
-			self.updateRemoteMetafile(path)
-		else:
-			self.updateLocalMetafile(path, remotemeta = self.manager.text(meta))
-
-	def get(self, path):
-		"""Get the local path of the file.
-		If it's not cached, download it."""
-		if not self.isCached(path):
-			self.download(path)
-		return self.manager.local(path)
-
-class RemoteDir(RemoteFile):
-	"""A remote directory manager"""
-
-	def listDir(self, path): # pragma: no cover
-		"""List the directories"""
-		raise NotImplementedError()
-
-	def download(self, path):
-		"""Download a remote directory"""
-		self.manager.local(path).mkdir(exist_ok = True, parents = True)
-		paths = self.listDir(path)
-		for path, ptype in paths:
-			if ptype == 'dir':
-				self.download(path)
-			else:
-				super().download(path)
+	def get(self):
+		"""Get the file, use it directly if cached, otherwise download it"""
+		if not self.isCached():
+			self.download()
+			self.updateHash()
+		return self.local
 
 class RemoteData:
-	"""Base class for remote data"""
 
-	def __init__(self, conf, manager = RemoteManager,
-		fileclass = RemoteFile, dirclass = RemoteDir):
-		self.manager = manager(conf)
-		self.remotefile = fileclass(conf, self.manager)
-		self.remotedir  = dirclass(conf, self.manager)
+	def __init__(self, config):
+		self.fileclass = RemoteFile
+		self.config    = config
+		self.cachedir  = config['cachedir']
 
-	# pylint: disable=unused-argument
-	def gettype(self, path): # pragma: no cover
-		"""Get the type of the path"""
-		return 'file'
+	def _fileobj(self, path):
+		return self.fileclass(
+			path, self.cachedir,
+			**{key:val for key,val in self.config.items() if key != 'cachedir'})
 
 	def get(self, path):
-		"""Get the local path, if file not cached, download it"""
-		if self.gettype(path) == 'dir':
-			return self.remotedir.get(path)
-		return self.remotefile.get(path)
+		return self._fileobj(path).get()
 
 	def clear(self):
-		"""Clear the cache"""
-		for path in self.manager.cachedir.glob('*'):
+		for path in self.cachedir.glob('*'):
 			try:
 				if path.is_dir():
 					shutil.rmtree(path)
@@ -224,112 +105,142 @@ class RemoteData:
 			except (PermissionError, OSError): # pragma: no cover
 				pass
 
-	def remove(self, path, clean = False):
-		"""Remove the local cache"""
-		self.manager.remove(path, clean)
-
-class GithubManager(RemoteManager):
-	"""A manager to download/query remote files"""
-
-	def __init__(self, conf):
-		super().__init__(conf)
-		self.repos  = ''
-		self.branch = 'master'
-
-	def _init(self):
-		repos = self.conf['repos'].rstrip('/')
-		slashcount = repos.count('/')
-		if slashcount not in (1,2):
-			raise ValueError('Invalid github repository, need "<user>/<repos>"')
-		if repos.count('/') == 1:
-			self.branch = 'master'
-			self.repos = repos
-		else:
-			rparts = repos.rpartition('/')
-			self.repos, self.branch = rparts[0], rparts[-1]
-		self.api = 'https://api.github.com/repos/%s/contents{/path}' % self.repos
-		if 'token' in self.conf:
-			self.session = requests.session()
-			self.session.auth = (
-				self.conf.get('user', repos.split('/')[0]),
-				self.conf['token'])
-
-	def get(self, path, **kwargs):
-		"""Get a request object"""
-		if not self.repos:
-			self._init()
-		kwargs['ref'] = kwargs.get('branch', self.branch)
-		return super().get(path, **kwargs)
-
-	def content(self, path, **kwargs):
-		res = self.json(path, **kwargs)
-		if 'message' in res and 'Not Found' in res['message']:
-			raise ValueError('Resource not found at %r' % path)
-		if 'message' in res and 'This API returns blobs up to 1 MB in size.' in res['message']:
-			if '/' not in path:
-				api = 'https://api.github.com/repos/%s/git/trees/%s' % (self.repos, self.branch)
-				tree = self.session.get(api).json()['tree']
-				blob = [t for t in tree if t['path'] == path][0]
-				return self.session.get(blob['url']).content
-			path = Path(path)
-			api = 'https://api.github.com/repos/%s/git/trees/%s:%s' % (
-				self.repos, self.branch, quote(str(path.parent)))
-			tree = self.session.get(api).json()['tree']
-			blob = [t for t in tree if t['path'] == path.name][0]
-			return self.session.get(blob['url']).content
-		return base64.b64decode(res['content'])
+	def remove(self, path):
+		self._fileobj(path).unlink()
 
 class GithubRemoteFile(RemoteFile):
-	"""Remote file from github"""
-	def updateRemoteMetafile(self, path):
-		if not self.conf.get('token'):
-			warnings.warn('No token provided, will always download %r without remote meta file.' % path)
-			return
-		# try to upload a metafile
-		lmeta = self.manager.cachedir / metafile(path)
-		api = 'https://api.github.com/repos/%s/contents/%s' % (self.manager.repos, metafile(path))
-		res = self.manager.session.put(api, data = dict(
-			message   = 'Create metafile for %s' % path,
-			content   = base64.b64encode(lmeta.read_bytes()).decode(),
-			sha       = sha1(lmeta),
-			branch    = self.manager.branch,
-			committer = {
-				"name": self.conf.get('uesr', self.conf['repos'].split('/')[0]),
-				"email": self.conf.get('email', '')
-			}
-		))
 
-		if res.status_code != 201:
-			warnings.warn(
-				'Cannot put meta information for %r, will always download it.\n'
-				'RESPONSE: %s' % (path, res.text))
+	@lru_cache()
+	def json(self, api = None):
+		api    = api or self.config['contents_api']
+		return self.config['session'].get(
+			api + str(self.path),
+			params = {'ref': self.config['branch']}).json()
 
-class GithubRemoteDir(RemoteDir, GithubRemoteFile):
-	"""Remote directory from github"""
+	def remoteHash(self):
+		return self.json()['sha']
 
-	def listDir(self, path):
-		"""List directory of remote path"""
-		req = self.manager.json(path)
-		if not isinstance(req, list):
-			raise ValueError('Not a directory or failed to fetch information: %r\n'
-				'RESPONSE: %r' % (path, req))
-		ret = []
-		for item in req:
-			if item['name'].endswith('.meta'):
-				continue
-			ret.append((item['path'], item['type']))
-		return ret
+	def download(self):
+		json = self.json()
+		if 'message' in json and 'Not Found' in json['message']:
+			raise ValueError('Resource not found at %r' % self.path)
+		if 'message' in json and 'This API returns blobs up to 1 MB in size.' in json['message']:
+			sha = json['sha']
+			json = self.json(api = self.config['blobs_api'] + str(self.path))
+		return base64.b64decode(json['content'])
 
 class GithubRemoteData(RemoteData):
-	"""Remote data from Github"""
-	def __init__(self, conf):
-		super().__init__(conf, GithubManager, GithubRemoteFile, GithubRemoteDir)
 
-	def gettype(self, path):
-		req = self.manager.get(path).text
-		return 'dir' if req[0] == '[' else 'file'
+	def __init__(self, config):
+		_requireConfig(config, 'repos')
 
-if CONFIG.source == 'github':
-	remotedata = GithubRemoteData(CONFIG) # pylint: disable=invalid-name
-else: # pragma: no cover
-	remotedata = RemoteData(CONFIG) # pylint: disable=invalid-name
+		self.fileclass = GithubRemoteFile
+		self.config    = config.copy()
+		token     = config.get('token')
+		branch    = 'master'
+
+		repos = config['repos']
+		slashcount = repos.count('/')
+		if slashcount not in (1,2):
+			raise ValueError('Invalid github repository, expect "<user>/<repos>"')
+		if repos.count('/') == 1:
+			branch = 'master'
+		else:
+			rparts = repos.rpartition('/')
+			repos, branch = rparts[0], rparts[-1]
+		session = requests.session()
+		if token:
+			session.auth = (config.get('user', repos.split('/')[0]), token)
+
+		self.config['session']      = session
+		self.config['branch']       = branch
+		self.config['contents_api'] = 'https://api.github.com/repos/%s/contents/' % repos # + path
+		self.config['blobs_api']    = 'https://api.github.com/repos/%s/git/blobs/' % repos   # + sha
+		self.config['hashtype']     = config.get('hashtype', 'git-sha')
+
+		self.cachedir = Path(config['cachedir']).joinpath(
+			'github',
+			repos.replace('/', '.') + '@' + branch)
+		self.cachedir.mkdir(exist_ok = True, parents = True)
+
+class GithubRDRemoteFile(GithubRemoteFile):
+	"""Remote file from github remotedata format repository"""
+	@property
+	def remoteHashFile(self):
+		"""Get remote hash file: .remotedata-hash/path.hash"""
+		return '.remotedata-hash/%s.hash' % str(self.path).replace('/', '.')
+
+	def remoteHash(self):
+		shafile = GithubRemoteFile(
+			self.remoteHashFile,
+			self.cachedir,
+			session      = self.config['session'],
+			branch       = self.config['branch'],
+			contents_api = self.config['contents_api'])
+		return base64.b64decode(shafile.json()['content'])
+
+class GithubRDRemoteData(GithubRemoteData):
+	"""Github repository with remotedata format"""
+	def __init__(self, config):
+		super().__init__(config)
+		self.fileclass = GithubRDRemoteFile
+
+def remotedata(config):
+	_requireConfig(config, 'source')
+	_requireConfig(config, 'cachedir')
+	if config['source'] == 'github':
+		return GithubRemoteData(config)
+	if config['source'] == 'github.remotedata':
+		return GithubRDRemoteData(config)
+	# if config['source'] == 'restful':
+	# 	return RestfulRemoteData(config)
+	# if config['source'] == 'ssh':
+	# 	return SshRemoteData(config)
+	raise ValueError('Unsupported source: %s.' % config['source'])
+
+def console():
+	"""Generate shas in .remotedata-hash"""
+	import sys
+	from fnmatch import fnmatch
+	if len(sys.argv) < 2:
+		workdir, hashtype = Path('.'), 'git-sha'
+	elif sys.argv[1] in ('-h', '--help'):
+		print('Usage: remotedata-hash [dir=./] [hashtype=git-sha(default)|sha|sha1|sha256|md5]')
+		sys.exit(1)
+	elif len(sys.argv) < 3:
+		workdir, hashtype = Path(sys.argv[1]), 'git-sha'
+	else:
+		workdir, hashtype = Path(sys.argv[1]), sys.argv[2]
+	gitignore = workdir / '.gitignore'
+	patterns = ['.remotedata-hash/', '.git/']
+	if gitignore.is_file():
+		with gitignore.open('r') as f:
+			for line in f:
+				line = line.strip()
+				if not line or line.startswith('#'):
+					continue
+				patterns.append(line)
+	patterns = ['**/' + pattern if '/' not in pattern else \
+		pattern + '*' if pattern.endswith('/') else \
+		pattern for pattern in patterns]
+	ignored = lambda fn: any(fnmatch(fn, pattern) for pattern in patterns)
+	shadir = workdir / '.remotedata-hash'
+	shadir.mkdir(exist_ok = True)
+	print('- WORKDING DIRECTORY: %s' % workdir)
+	print('- HASH TYPE: %s\n' % hashtype)
+	for path in workdir.rglob('*'):
+		if not path.is_file():
+			continue
+		rpath = path.relative_to(workdir)
+		if ignored(rpath):
+			continue
+		print('- Working on %s' % rpath)
+		shafile = workdir / '.remotedata-hash' / (str(rpath).replace('/', '.') + '.hash')
+		oldsha = shafile.read_text() if shafile.is_file() else '[]'
+		newsha = _hashfile(path, hashtype)
+		if oldsha != newsha:
+			shafile.write_text(newsha)
+			print('  UPDATED: %s -> %s (%s)' % (oldsha, newsha, shafile.relative_to(workdir)))
+		else:
+			print('  UNCHANGED: %s (%s)' % (oldsha, shafile.relative_to(workdir)))
+	print('- Done!')

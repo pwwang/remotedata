@@ -14,9 +14,13 @@ repository = "https://github.com/pwwang/remotedata"
 
 [tool.poetry.dependencies]
 python = "^3.4"
-python-simpleconf = "*"
 requests = "*"
+cmdy = "*"
 
 [tool.poetry.dev-dependencies]
 pytest = "*"
 pytest-cov = "*"
+python-simpleconf = "*"
+
+[tool.poetry.scripts]
+remotedata-hash = "remotedata:console"
