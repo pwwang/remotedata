@@ -2,7 +2,7 @@ import pytest
 from pathlib import Path
 import requests
 from simpleconf import Config
-from remotedata import remotedata, GithubRemoteData, GithubRemoteFile
+from remotedata import remotedata, GithubRemoteData, GithubRemoteFile, _hashfile
 
 def setup_module(module):
 	pytest.config = Config()
@@ -50,6 +50,10 @@ def config_withbranch(tmp_path):
 	ret.cachedir = tmp_path
 	return ret
 
+def test_githubremotedata_noreqkey():
+	with pytest.raises(KeyError):
+		remotedata({'source': 'github'})
+
 def test_githubremotedata_invalidrepos(config_invalidrepos):
 	with pytest.raises(ValueError):
 		remotedata(config_invalidrepos)
@@ -65,9 +69,33 @@ def test_githubremotedata_withbranch(config_withbranch, tmp_path):
 	assert ghremotedata.cachedir == tmp_path / 'github' / 'pwwang.remotedata@notmaster'
 	assert ghremotedata.cachedir.is_dir()
 
-def test_githubremotedata_standard(config_standard):
+def test_githubremotedata_standard(config_standard, tmp_path):
 	ghremotedata = remotedata(config_standard)
 	assert isinstance(ghremotedata._fileobj('tests/data/test.txt'), GithubRemoteFile)
+	path = 'tests/data/test.txt'
+	ghobj = ghremotedata._fileobj(path)
+	assert ghobj.local == ghobj.cachedir / 'tests/data/test.txt'
+	assert ghobj.localHashFile == ghobj.cachedir / '.remotedata-hash/tests.data.test.txt.hash'
+	assert ghobj.remoteHash() == ghobj.json()['sha']
+	ghobj.download()
+	assert ghobj.local.is_file()
+	ghobj.updateHash()
+	assert ghobj.isCached()
+
+	ghremotedata.remove(path)
+	assert not ghobj.isCached()
+
+	ghremotedata.get(path)
+	assert ghobj.isCached()
+
+	ghremotedata.get('pyproject.toml')
+	ghremotedata.clear()
+	assert not ghobj.isCached()
+
+	with pytest.raises(ValueError) as error:
+		ghremotedata.get('NoSuchFile')
+	assert 'Resource not found' in str(error.value)
+
 
 
 

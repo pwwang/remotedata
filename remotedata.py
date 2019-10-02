@@ -14,13 +14,14 @@ def _requireConfig(config, key):
 def _hashfile(path, method = 'git-sha'):
 	if method == 'git-sha':
 		return cmdy.git('hash-object', str(path)).split()[0]
-	if method == 'sha' or method == 'sha1':
+	# pragma: no cover, will be used in the future.
+	if method == 'sha' or method == 'sha1': # pragma: no cover
 		return cmdy.sha1sum(str(path)).split()[0]
-	if method == 'sha256':
+	if method == 'sha256': # pragma: no cover
 		return cmdy.sha256sum(str(path)).split()[0]
-	if method == 'md5':
+	if method == 'md5': # pragma: no cover
 		return cmdy.md5sum(str(path)).split()[0]
-	raise ValueError('Unsupported hash type.')
+	raise ValueError('Unsupported hash type.') # pragma: no cover
 
 class RemoteFile:
 	"""APIs to access, operate and download remote files."""
@@ -40,12 +41,14 @@ class RemoteFile:
 		"""Get local hash file"""
 		return self.cachedir / '.remotedata-hash' / (str(self.path).replace('/', '.') + '.hash')
 
-	def remoteHash(self):
+	def remoteHash(self): # pragma: no cover
 		"""Get hash from remote"""
 		raise NotImplementedError("Don't know how to get remote hash.")
 
 	def hash(self):
 		"""Get hash for file"""
+		if not self.local.exists():
+			return ''
 		return _hashfile(self.local, self.config['hashtype'])
 
 	def localHash(self):
@@ -61,7 +64,7 @@ class RemoteFile:
 
 	def isCached(self):
 		"""Tell if a file is cached"""
-		return self.local.exists() and self.localHash() == self.remoteHash()
+		return self.localHash() == self.remoteHash()
 
 	def updateHash(self):
 		"""Update local hash"""
@@ -69,7 +72,7 @@ class RemoteFile:
 			self.localHashFile.parent.mkdir(parents = True, exist_ok = True)
 		self.localHashFile.write_text(self.hash())
 
-	def download(self):
+	def download(self): # pragma: no cover
 		"""Download remote file to local"""
 		raise NotImplementedError("Don't know how to download remote file.")
 
@@ -106,7 +109,11 @@ class RemoteData:
 				pass
 
 	def remove(self, path):
-		self._fileobj(path).unlink()
+		fileobj = self._fileobj(path)
+		if fileobj.local.exists():
+			fileobj.local.unlink()
+		if fileobj.localHashFile.exists():
+			fileobj.localHashFile.unlink()
 
 class GithubRemoteFile(RemoteFile):
 
@@ -118,7 +125,7 @@ class GithubRemoteFile(RemoteFile):
 			params = {'ref': self.config['branch']}).json()
 
 	def remoteHash(self):
-		return self.json()['sha']
+		return self.json().get('sha', 'SHA-FETCHING-FAILURE')
 
 	def download(self):
 		json = self.json()
@@ -127,11 +134,15 @@ class GithubRemoteFile(RemoteFile):
 		if 'message' in json and 'This API returns blobs up to 1 MB in size.' in json['message']:
 			sha = json['sha']
 			json = self.json(api = self.config['blobs_api'] + str(self.path))
-		return base64.b64decode(json['content'])
+		self.local.parent.mkdir(exist_ok = True, parents = True)
+		with self.local.open('wb') as f:
+			f.write(base64.b64decode(json['content']))
 
 class GithubRemoteData(RemoteData):
 
 	def __init__(self, config):
+		super().__init__(config)
+
 		_requireConfig(config, 'repos')
 
 		self.fileclass = GithubRemoteFile
