@@ -4,7 +4,7 @@ build-backend = "poetry.masonry.api"
 
 [tool.poetry]
 name = "remotedata"
-version = "0.0.1"
+version = "0.1.0"
 description = "Accessing and caching remote data."
 authors = [ "pwwang <pwwang@pwwang.com>",]
 license = "MIT"
