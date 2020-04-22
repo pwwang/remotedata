@@ -29,25 +29,25 @@ def setup_module(module):
 @pytest.fixture
 def config_standard(tmp_path):
 	print('\nCACHEDIR: %s\n' % tmp_path)
-	ret = pytest.config._use('standard', copy = True)
+	ret = pytest.config._use('standard', 'default', copy = True)
 	ret.cachedir = tmp_path
 	return ret
 
 @pytest.fixture
 def config_invalidrepos(tmp_path):
-	ret = pytest.config._use('invalidrepos', copy = True)
+	ret = pytest.config._use('invalidrepos', 'default', copy = True)
 	ret.cachedir = tmp_path
 	return ret
 
 @pytest.fixture
 def config_withbranch(tmp_path):
-	ret = pytest.config._use('withbranch', copy = True)
+	ret = pytest.config._use('withbranch', 'default', copy = True)
 	ret.cachedir = tmp_path
 	return ret
 
 @pytest.fixture
 def config_dropbox(tmp_path):
-	ret = pytest.config._use('dropbox', copy = True)
+	ret = pytest.config._use('dropbox', 'default', copy = True)
 	ret.cachedir = tmp_path
 	return ret
 
